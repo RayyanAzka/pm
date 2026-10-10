@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -285,7 +286,8 @@ def call_openrouter(prompt: str) -> str:
             "messages": [
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": 200,
+            "max_tokens": 4096,
+            "response_format": {"type": "json_object"},
         },
         timeout=60,
     )
@@ -296,6 +298,145 @@ def call_openrouter(prompt: str) -> str:
     if isinstance(message, list):
         return "".join(part.get("text", "") for part in message)
     return str(message)
+
+
+def _validate_board_payload(board: object) -> dict:
+    if not isinstance(board, dict):
+        raise ValueError("Board payload must be an object.")
+    if "columns" not in board or "cards" not in board:
+        raise ValueError("Board payload must include columns and cards.")
+
+    columns = board["columns"]
+    cards = board["cards"]
+    if not isinstance(columns, list):
+        raise ValueError("Board columns must be a list.")
+    if not isinstance(cards, dict):
+        raise ValueError("Board cards must be an object keyed by card id.")
+
+    referenced_card_ids = set()
+    for column in columns:
+        if not isinstance(column, dict):
+            raise ValueError("Each column must be an object.")
+        if not isinstance(column.get("id"), str):
+            raise ValueError("Each column must include a string id.")
+        if not isinstance(column.get("title"), str):
+            raise ValueError("Each column must include a string title.")
+
+        card_ids_in_column = column.get("cardIds", [])
+        if not isinstance(card_ids_in_column, list):
+            raise ValueError("Each column cardIds must be a list.")
+
+        for card_id in card_ids_in_column:
+            if not isinstance(card_id, str):
+                raise ValueError("Column card ids must be strings.")
+            referenced_card_ids.add(card_id)
+            if card_id not in cards:
+                raise ValueError(f"Column references missing card {card_id}.")
+
+    for card_id, card in cards.items():
+        if not isinstance(card, dict):
+            raise ValueError("Each card must be an object.")
+        if card_id != card.get("id"):
+            raise ValueError("Card id mismatch between object key and card id.")
+        if not isinstance(card.get("title"), str):
+            raise ValueError("Each card must include a string title.")
+        if not isinstance(card.get("details"), str):
+            raise ValueError("Each card must include a string details field.")
+        if card_id not in referenced_card_ids:
+            raise ValueError(f"Card {card_id} is not referenced by any column.")
+
+    return board
+
+
+def _parse_ai_json_response(raw_response: str) -> dict:
+    candidate = raw_response.strip()
+
+    if not candidate:
+        raise ValueError("AI response is empty.")
+
+    candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\s*```$", "", candidate, flags=re.IGNORECASE | re.DOTALL)
+
+    def _extract_json_object(segment: str) -> str:
+        start = segment.find("{")
+        if start == -1:
+            return segment
+
+        in_string = False
+        escaped = False
+        depth = 0
+        for index in range(start, len(segment)):
+            char = segment[index]
+
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+
+            if char in "[{":
+                depth += 1
+                continue
+
+            if char in "]}":
+                if depth == 1:
+                    return segment[start:index + 1]
+                depth -= 1
+
+        return segment[start:]
+
+    def _repair_missing_commas(segment: str) -> str:
+        repaired = segment
+        repaired = re.sub(r'(?<=[}\]])\s*(?=\{)', ", ", repaired)
+        repaired = re.sub(r'(?<=[}\]])\s*(?="(?:[^"\\]|\\.)*"\s*:)', ", ", repaired)
+        return repaired
+
+    candidate = _extract_json_object(candidate)
+
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        repaired = _repair_missing_commas(candidate)
+        try:
+            parsed = json.loads(repaired)
+        except json.JSONDecodeError:
+            raise
+
+    if not isinstance(parsed, dict):
+        raise TypeError("AI response must decode to a JSON object.")
+
+    return parsed
+
+
+def _build_ai_board_prompt(prompt: str, board: dict, history: list[dict] | None = None) -> str:
+    history_text = ""
+    if history:
+        history_entries = []
+        for item in history:
+            if isinstance(item, dict):
+                role = item.get("role", "user")
+                content = item.get("content", "")
+                history_entries.append(f"{role}: {content}")
+        history_text = "\n".join(history_entries)
+
+    return (
+        "You are helping manage a Kanban board. "
+        "Return valid JSON only. Do not wrap it in markdown fences. The JSON object must have a string 'response' and an optional 'board' field. "
+        "Never include prose before or after the JSON. Ensure every property is separated by commas and every card entry is a valid object. "
+        "If no board change is needed, return the same board or omit the board field. "
+        "Do not invent card ids. Preserve existing ids and only update fields that are clearly requested.\n\n"
+        f"Conversation history:\n{history_text or 'No prior conversation.'}\n\n"
+        f"User prompt:\n{prompt}\n\n"
+        f"Current board JSON:\n{json.dumps(board, separators=(',', ':'))}\n\n"
+        "Return this exact JSON shape: {\"response\": \"...\", \"board\": {...same structure as current board...}}"
+    )
 
 
 def serve_frontend_index() -> FileResponse:
@@ -341,6 +482,53 @@ async def ai_test(payload: dict | None = Body(default=None)) -> dict[str, str]:
         raise HTTPException(status_code=503, detail=f"OpenRouter request failed: {exc}") from exc
 
     return {"prompt": prompt, "response": response}
+
+
+@app.post("/api/ai/board")
+async def ai_board(payload: dict | None = Body(default=None)) -> dict:
+    if payload is None or not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="AI board request payload must be an object.")
+
+    username = str(payload.get("username", "user"))
+    prompt = str(payload.get("prompt", "")).strip()
+    board = payload.get("board")
+    history = payload.get("history", [])
+
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required.")
+
+    try:
+        validated_board = _validate_board_payload(board)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Board validation failed: {exc}") from exc
+
+    try:
+        raw_response = call_openrouter(_build_ai_board_prompt(prompt, validated_board, history))
+        parsed = _parse_ai_json_response(raw_response)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=f"AI response was not valid JSON: {exc}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=f"OpenRouter request failed: {exc}") from exc
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="AI response must be a JSON object.")
+    response_text = parsed.get("response")
+    if not isinstance(response_text, str):
+        raise HTTPException(status_code=400, detail="AI response must include a string 'response'.")
+
+    board_update = parsed.get("board")
+    if board_update is not None:
+        try:
+            validated_update = _validate_board_payload(board_update)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"AI board update validation failed: {exc}") from exc
+        saved_board = _replace_board_for_user(username, validated_update)
+        return {"response": response_text, "board": saved_board}
+
+    current_board = _serialize_board(_get_user_id(username))
+    return {"response": response_text, "board": current_board}
 
 
 @app.get("/api/users/{username}/board")

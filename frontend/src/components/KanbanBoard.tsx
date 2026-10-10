@@ -17,11 +17,24 @@ import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
 
 const boardApiUrl = "/api/users/user/board";
 
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 export const KanbanBoard = () => {
   const [board, setBoard] = useState<BoardData>(initialData);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      role: "assistant",
+      content: "Hi! I can rename cards, move work, or update the board for you.",
+    },
+  ]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -145,6 +158,75 @@ export const KanbanBoard = () => {
     void syncBoard(nextBoard);
   };
 
+  const handleAiSubmit = async () => {
+    const trimmedPrompt = aiPrompt.trim();
+    if (!trimmedPrompt || isAiLoading) {
+      return;
+    }
+
+    const nextMessages: ChatMessage[] = [
+      ...chatMessages,
+      { role: "user", content: trimmedPrompt },
+    ];
+    setChatMessages(nextMessages);
+    setAiPrompt("");
+    setIsAiLoading(true);
+
+    try {
+      const response = await fetch("/api/ai/board", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: "user",
+          prompt: trimmedPrompt,
+          board,
+          history: nextMessages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | { detail?: string }
+          | null;
+        throw new Error(payload?.detail || "I couldn't process that request.");
+      }
+
+      const payload = (await response.json()) as {
+        response?: string;
+        board?: BoardData;
+      };
+
+      if (payload.board) {
+        setBoard(payload.board);
+      }
+
+      setChatMessages([
+        ...nextMessages,
+        {
+          role: "assistant",
+          content: payload.response || "The board was updated.",
+        },
+      ]);
+      setErrorMessage(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "I couldn't reach the AI.";
+      setChatMessages([
+        ...nextMessages,
+        {
+          role: "assistant",
+          content: message,
+        },
+      ]);
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
   const activeCard = activeCardId ? cardsById[activeCardId] : null;
 
   if (isLoading) {
@@ -202,32 +284,81 @@ export const KanbanBoard = () => {
           </div>
         </header>
 
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCorners}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-        >
-          <section className="grid gap-6 lg:grid-cols-5">
-            {board.columns.map((column) => (
-              <KanbanColumn
-                key={column.id}
-                column={column}
-                cards={column.cardIds.map((cardId) => board.cards[cardId])}
-                onRename={handleRenameColumn}
-                onAddCard={handleAddCard}
-                onDeleteCard={handleDeleteCard}
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCorners}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+          >
+            <section className="grid gap-6 lg:grid-cols-5">
+              {board.columns.map((column) => (
+                <KanbanColumn
+                  key={column.id}
+                  column={column}
+                  cards={column.cardIds.map((cardId) => board.cards[cardId])}
+                  onRename={handleRenameColumn}
+                  onAddCard={handleAddCard}
+                  onDeleteCard={handleDeleteCard}
+                />
+              ))}
+            </section>
+            <DragOverlay>
+              {activeCard ? (
+                <div className="w-[260px]">
+                  <KanbanCardPreview card={activeCard} />
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+
+          <aside className="rounded-[28px] border border-[var(--stroke)] bg-white/90 p-5 shadow-[var(--shadow)] backdrop-blur">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.25em] text-[var(--navy-dark)]">
+                AI assistant
+              </h2>
+              <span className="rounded-full bg-[var(--surface)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--primary-blue)]">
+                Live
+              </span>
+            </div>
+
+            <div className="space-y-3">
+              {chatMessages.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}`}
+                  className={`rounded-2xl border px-3 py-2 text-sm leading-6 ${
+                    message.role === "assistant"
+                      ? "border-[var(--stroke)] bg-[var(--surface)] text-[var(--navy-dark)]"
+                      : "border-[var(--primary-blue)]/25 bg-[var(--primary-blue)]/5 text-[var(--navy-dark)]"
+                  }`}
+                >
+                  <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
+                    {message.role === "assistant" ? "Assistant" : "You"}
+                  </p>
+                  <p>{message.content}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 space-y-3">
+              <textarea
+                value={aiPrompt}
+                onChange={(event) => setAiPrompt(event.target.value)}
+                placeholder="Ask the AI to update your board"
+                rows={4}
+                className="w-full rounded-2xl border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)]"
               />
-            ))}
-          </section>
-          <DragOverlay>
-            {activeCard ? (
-              <div className="w-[260px]">
-                <KanbanCardPreview card={activeCard} />
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
+              <button
+                type="button"
+                onClick={handleAiSubmit}
+                disabled={isAiLoading || !aiPrompt.trim()}
+                className="w-full rounded-full bg-[var(--secondary-purple)] px-4 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-white transition enabled:hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isAiLoading ? "Sending..." : "Send"}
+              </button>
+            </div>
+          </aside>
+        </div>
       </main>
     </div>
   );

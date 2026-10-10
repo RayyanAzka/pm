@@ -82,4 +82,56 @@ describe("KanbanBoard", () => {
 
     expect(within(column).queryByText("New card")).not.toBeInTheDocument();
   });
+
+  it("sends a prompt to the AI sidebar and updates the board", async () => {
+    mockFetch.mockImplementation(async (url: RequestInfo | URL, options?: RequestInit) => {
+      if (url === "/api/users/user/board" && (!options || options.method !== "PUT")) {
+        return {
+          ok: true,
+          json: async () => initialData,
+        } as Response;
+      }
+
+      if (url === "/api/users/user/board" && options?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => JSON.parse(String(options.body)),
+        } as Response;
+      }
+
+      if (url === "/api/ai/board" && options?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            response: "Updated the task.",
+            board: {
+              ...initialData,
+              cards: {
+                ...initialData.cards,
+                "card-1": { ...initialData.cards["card-1"], title: "Updated task" },
+              },
+            },
+          }),
+        } as Response;
+      }
+
+      return {
+        ok: true,
+        json: async () => initialData,
+      } as Response;
+    });
+
+    render(<KanbanBoard />);
+    await waitFor(() => expect(screen.getAllByTestId(/column-/i)).toHaveLength(5));
+
+    const input = screen.getByPlaceholderText(/ask the ai to update your board/i);
+    await userEvent.type(input, "Rename the top task");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() => expect(screen.getByText("Updated the task.")).toBeInTheDocument());
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/ai/board",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
 });
