@@ -1,17 +1,54 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { KanbanBoard } from "@/components/KanbanBoard";
+import { initialData } from "@/lib/kanban";
+
+const mockFetch = vi.fn();
 
 const getFirstColumn = () => screen.getAllByTestId(/column-/i)[0];
 
 describe("KanbanBoard", () => {
-  it("renders five columns", () => {
+  beforeEach(() => {
+    mockFetch.mockImplementation(async (url: RequestInfo | URL, options?: RequestInit) => {
+      if (url === "/api/users/user/board" && (!options || options.method !== "PUT")) {
+        return {
+          ok: true,
+          json: async () => initialData,
+        } as Response;
+      }
+
+      if (url === "/api/users/user/board" && options?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => JSON.parse(String(options.body)),
+        } as Response;
+      }
+
+      return {
+        ok: true,
+        json: async () => initialData,
+      } as Response;
+    });
+    global.fetch = mockFetch as typeof fetch;
+  });
+
+  afterEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it("loads the board from the backend API", async () => {
     render(<KanbanBoard />);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/users/user/board");
+    });
     expect(screen.getAllByTestId(/column-/i)).toHaveLength(5);
   });
 
   it("renames a column", async () => {
     render(<KanbanBoard />);
+    await waitFor(() => expect(screen.getAllByTestId(/column-/i)).toHaveLength(5));
+
     const column = getFirstColumn();
     const input = within(column).getByLabelText("Column title");
     await userEvent.clear(input);
@@ -21,6 +58,8 @@ describe("KanbanBoard", () => {
 
   it("adds and removes a card", async () => {
     render(<KanbanBoard />);
+    await waitFor(() => expect(screen.getAllByTestId(/column-/i)).toHaveLength(5));
+
     const column = getFirstColumn();
     const addButton = within(column).getByRole("button", {
       name: /add a card/i,

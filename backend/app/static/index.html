@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PM Backend</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: Arial, sans-serif;
+        background: #f3f6fb;
+        color: #032147;
+      }
+      .card {
+        background: white;
+        border-radius: 20px;
+        padding: 2rem 3rem;
+        box-shadow: 0 18px 40px rgba(3, 33, 71, 0.1);
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+      }
+      p {
+        margin: 0;
+        color: #555;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Hello World</h1>
+      <p id="status">Checking API health...</p>
+    </main>
+    <script>
+      fetch('/api/health')
+        .then((response) => response.json())
+        .then((data) => {
+          document.getElementById('status').textContent = 'API says: ' + data.status + ' (' + data.service + ')';
+        })
+        .catch(() => {
+          document.getElementById('status').textContent = 'API request failed';
+        });
+    </script>
+  </body>
+</html>

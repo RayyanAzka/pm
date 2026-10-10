@@ -172,5 +172,9 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+# Local runtime files
+.pm-server.pid
+.pm-server.log
+
 .DS_Store
 

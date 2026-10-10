@@ -1,0 +1,76 @@
+{
+  "database": {
+    "dialect": "sqlite",
+    "version": "3.x",
+    "notes": [
+      "Single SQLite database file created automatically if it does not exist.",
+      "One user can have one board in the MVP, with the schema designed for future multi-user expansion."
+    ]
+  },
+  "tables": {
+    "users": {
+      "columns": [
+        { "name": "id", "type": "TEXT", "primary_key": true },
+        { "name": "username", "type": "TEXT", "unique": true, "not_null": true },
+        { "name": "password_hash", "type": "TEXT", "not_null": true },
+        { "name": "created_at", "type": "TEXT", "not_null": true }
+      ],
+      "purpose": "Stores a user account. For the MVP, the app will autoload the default user 'user' but the schema is expandable for future users."
+    },
+    "boards": {
+      "columns": [
+        { "name": "id", "type": "TEXT", "primary_key": true },
+        { "name": "user_id", "type": "TEXT", "not_null": true, "foreign_key": "users.id" },
+        { "name": "name", "type": "TEXT", "not_null": true, "default": "Project Board" },
+        { "name": "updated_at", "type": "TEXT", "not_null": true }
+      ],
+      "purpose": "Stores the single project board for a user in the MVP."
+    },
+    "columns": {
+      "columns": [
+        { "name": "id", "type": "TEXT", "primary_key": true },
+        { "name": "board_id", "type": "TEXT", "not_null": true, "foreign_key": "boards.id" },
+        { "name": "position", "type": "INTEGER", "not_null": true },
+        { "name": "title", "type": "TEXT", "not_null": true }
+      ],
+      "purpose": "Stores the fixed Kanban columns and their current order. Column titles are user-editable."
+    },
+    "cards": {
+      "columns": [
+        { "name": "id", "type": "TEXT", "primary_key": true },
+        { "name": "board_id", "type": "TEXT", "not_null": true, "foreign_key": "boards.id" },
+        { "name": "column_id", "type": "TEXT", "not_null": true, "foreign_key": "columns.id" },
+        { "name": "title", "type": "TEXT", "not_null": true },
+        { "name": "details", "type": "TEXT", "default": "" },
+        { "name": "position", "type": "INTEGER", "not_null": true },
+        { "name": "created_at", "type": "TEXT", "not_null": true },
+        { "name": "updated_at", "type": "TEXT", "not_null": true }
+      ],
+      "purpose": "Stores cards and their current column placement and ordering."
+    }
+  },
+  "relationships": {
+    "users_to_boards": "One user may have one active board in the MVP. This is designed to scale to multiple boards later.",
+    "boards_to_columns": "One board contains multiple columns in a fixed order.",
+    "boards_to_cards": "One board contains many cards. Each card belongs to exactly one column at a time.",
+    "columns_to_cards": "A column contains many cards ordered by position."
+  },
+  "mvp_configuration": {
+    "default_user": "user",
+    "default_password": "password",
+    "board_count_per_user": 1,
+    "column_titles": [
+      "Backlog",
+      "Discovery",
+      "In Progress",
+      "Review",
+      "Done"
+    ],
+    "column_count": 5,
+    "card_fields": [
+      "id",
+      "title",
+      "details"
+    ]
+  }
+}
